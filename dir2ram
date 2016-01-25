@@ -28,14 +28,14 @@
 #
 # 0.2 (1.24.2016):
 # - Change behavior so that subsequent lines with the same directory specified overwrite previous entries.
-# - Read all /etc/dir2ram/*.conf configuration files, instead of just dir2ram.conf.
+# - Read all /etc/dir2ram/*.conf configuration files, instead of just dir2ram.conf.  Read in sorted order.
 
 # Unbuffer STDOUT
 $| = 1;
 
 $config_dir = "/etc/dir2ram";
 $main_config = "${config_dir}/dir2ram.conf";
-@config_files = glob("${config_dir}/*.conf");
+@config_files = sort glob("${config_dir}/*.conf");
 $init_dir = "/etc/init.d";
 $bind_dir = "/var/dir2ram";
 $lock_dir = "/run/lock";
