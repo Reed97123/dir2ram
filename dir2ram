@@ -25,13 +25,17 @@
 #    - Automatically stops dependent services before mounting the directory.  This avoids corruption of the
 #        directory if the service were to try to access the directory during mounting.  Services are
 #        restarted after the directory has been mounted.
-# 
+#
+# 0.2 (1.24.2016):
+# - Change behavior so that subsequent lines with the same directory specified overwrite previous entries.
+# - Read all /etc/dir2ram/*.conf configuration files, instead of just dir2ram.conf.
 
 # Unbuffer STDOUT
 $| = 1;
 
 $config_dir = "/etc/dir2ram";
-$config_file = "${config_dir}/dir2ram.conf";
+$main_config = "${config_dir}/dir2ram.conf";
+@config_files = glob("${config_dir}/*.conf");
 $init_dir = "/etc/init.d";
 $bind_dir = "/var/dir2ram";
 $lock_dir = "/run/lock";
@@ -84,7 +88,7 @@ OPTIONS
 FILES
 	/sbin/dir2ram
 		Main program.
-	$config_file
+	$main_config
 		Main configuration file.
                    Name:  Single word description of this entry.
                    File System:  Options are tmpfs (typical) or ramfs.
@@ -578,12 +582,12 @@ sub initialize
     mkdir $config_dir unless (-d $config_dir);
 
     # Create the config file if it doesn't exist.
-    unless (-e $config_file) 
+    unless (-e $main_config) 
     {
-        open(CONFIG_FILE, ">$config_file") or die "-F- Cannot create $config_file\n";
-        print CONFIG_FILE $config_template;
-        close CONFIG_FILE;
-        print "Created configuration file template: $config_file\n" if ($verbose or $configuration);
+        open(MAIN_CONFIG, ">$main_config") or die "-F- Cannot create $main_config\n";
+        print MAIN_CONFIG $config_template;
+        close MAIN_CONFIG;
+        print "Created configuration file template: $main_config\n" if ($verbose or $configuration);
     }
 
     # Exit if the configuration option was selected.  Nothing more to do.
@@ -595,115 +599,117 @@ sub read_configuration
     # Read in the current mounts to understand if items in the config file already exist
     &read_mounts();
 
-    open(CONFIG_FILE, $config_file) or die "-F- Cannot open $config_file\n";
-
-    while (<CONFIG_FILE>) 
+    foreach $config_file (@config_files) 
     {
-        # Skip lines that begin with '#'
-        next if (/^\s*\#/);
-        chomp;
-
-        # Keep going unless I find a properly formatted line
-        next unless (my ($name, $fs, $size, $log_hist, $services, $dir) =
-                     $_ =~ /^\s*(\S+)\s+(tmpfs|ramfs)\s+(\d+)\s*(?:m|M|MB|mb)?\s+(-?\d+)\s+([^\/]+)\s+(\/.*)\s*$/);
-
-        # Cleanup the input.  Convert ',' to ' ' and get rid of multiple spaces.
-        $services =~ s/,/ /g;
-        $services =~ s/\s+/ /g;
-
-        if ($verbose) 
+        open(CONFIG_FILE, $config_file) or die "-F- Cannot open $config_file\n";
+        
+        while (<CONFIG_FILE>) 
         {
-            print "-I- Read Line ($config_file):\n";
-            printf("%15s %-9s %20s %-25s\n", "Name:", $name, "Directory:", $dir);
-            printf("%15s %-9s %20s %-25s\n", "Size:", $size . " MB", "Log History:", $log_hist);
-            printf("%15s %-9s %20s %-25s\n", "Filesystem:", $fs, "Service Dependency:", $services );
-        }
-
-        #
-        # Perform Checks of the input
-        #
-
-        # Don't check for these items if the directory is already mounted.
-        unless (exists $mounts_dir2ram{$name}) 
-        {
-            #   Check to see if the directly exists
-            unless (-d $dir) 
+            # Skip lines that begin with '#'
+            next if (/^\s*\#/);
+            chomp;
+            
+            # Keep going unless I find a properly formatted line
+            next unless (my ($name, $fs, $size, $log_hist, $services, $dir) =
+                         $_ =~ /^\s*(\S+)\s+(tmpfs|ramfs)\s+(\d+)\s*(?:m|M|MB|mb)?\s+(-?\d+)\s+([^\/]+)\s+(\/.*)\s*$/);
+            
+            # Cleanup the input.  Convert ',' to ' ' and get rid of multiple spaces.
+            $services =~ s/,/ /g;
+            $services =~ s/\s+/ /g;
+            
+            if ($verbose) 
             {
-                print "-W- Directory doesn't exist: \'$dir\'.  Skipping directory: $name.\n"
-                    if ($generate or $verbose);
-                next;
+                print "-I- Read Line ($config_file):\n";
+                printf("%15s %-9s %20s %-25s\n", "Name:", $name, "Directory:", $dir);
+                printf("%15s %-9s %20s %-25s\n", "Size:", $size . " MB", "Log History:", $log_hist);
+                printf("%15s %-9s %20s %-25s\n", "Filesystem:", $fs, "Service Dependency:", $services );
             }
-
-            #   Check to see if specified services actually exist
-            my $skip_for_service_error = 0;
-            foreach $service_name (split(" ", $services)) 
+            
+            #
+            # Perform Checks of the input
+            #
+            
+            # Don't check for these items if the directory is already mounted.
+            unless (exists $mounts_dir2ram{$name}) 
             {
-                # Don't check system services which start with '$'.  Example '$syslog'.
-                next if ($service_name =~ /^\$/);
-                
-                unless (-e "${init_dir}/${service_name}") 
+                #   Check to see if the directly exists
+                unless (-d $dir) 
                 {
-                    print "-W- Specified service doesn't exist: $service_name.  Skipping directory: $name.\n"
+                    print "-W- Directory doesn't exist: \'$dir\'.  Skipping directory: $name.\n"
                         if ($generate or $verbose);
-                    $skip_for_service_error = 1;
+                    next;
                 }
+                
+                #   Check to see if specified services actually exist
+                my $skip_for_service_error = 0;
+                foreach $service_name (split(" ", $services)) 
+                {
+                    # Don't check system services which start with '$'.  Example '$syslog'.
+                    next if ($service_name =~ /^\$/);
+                    
+                    unless (-e "${init_dir}/${service_name}") 
+                    {
+                        print "-W- Specified service doesn't exist: $service_name.  Skipping directory: $name.\n"
+                            if ($generate or $verbose);
+                        $skip_for_service_error = 1;
+                    }
+                }
+                next if ($skip_for_service_error);
             }
-            next if ($skip_for_service_error);
+            
+            #   Check the directory size against the requested size.
+            my $du_command = "du -m -s \"$dir\"";
+            my $actual_size = `$du_command` or die "-F- Unable to execute: \"$du_command\"\n";
+            ($actual_size) = split(" ", $actual_size);
+            if ($actual_size > $size) 
+            {
+                print "-W- Specified size (${size}M) is too small vs. actual directory size (${actual_size}M): $name.\n"
+                    if ($generate or $verbose);
+            }
+            
+            #   Skip if the name isn't unique (repeat).
+#        if (exists $config_settings{$dir}) 
+#        {
+#            print "-W- Specified directory ($dir) is a repeat.  Skipping directory: $name.\n" if ($generate or $verbose);
+#            next;
+#        }
+            
+            #   Log History is limited to 9
+            if ($log_hist > 9) 
+            {
+                print "-W- Log history cannot be greater than 9 (setting it to 9).\n" if ($generate or $verbose);
+                $log_hist = 9;
+            }
+            
+            #   Check for -1 to disable cleanup
+            $disable_cleanup = "";
+            if ($log_hist < 0)
+            {
+                $log_hist = 9;
+                $disable_cleanup = '#';
+            }
+            
+            # Record the settings
+            $config_settings{$dir}{'FILE_SYSTEM'} = $fs;
+            $config_settings{$dir}{'SERVICE_NAME'} = 'dir2ram_' . $name;
+            $config_settings{$dir}{'ORIGINAL_NAME'} = $name;
+            $config_settings{$dir}{'MEMORY_SIZE'} = $size . "M";
+            $config_settings{$dir}{'ACTUAL_SIZE'} = $actual_size . "M";
+            $config_settings{$dir}{'LOG_HISTORY'} = $log_hist;
+            $config_settings{$dir}{'DEPENDENT_SERVICE'} = $services;
+            $config_settings{$dir}{'DISABLE_CLEANUP'} = $disable_cleanup;
         }
         
-        #   Check the directory size against the requested size.
-        my $du_command = "du -m -s \"$dir\"";
-        my $actual_size = `$du_command` or die "-F- Unable to execute: \"$du_command\"\n";
-        ($actual_size) = split(" ", $actual_size);
-        if ($actual_size > $size) 
-        {
-            print "-W- Specified size (${size}M) is too small vs. actual directory size (${actual_size}M): $name.\n"
-                if ($generate or $verbose);
-        }
-
-        #   Skip if the name isn't unique (repeat).
-        if (exists $config_settings{$dir}) 
-        {
-            print "-W- Specified directory ($dir) is a repeat.  Skipping directory: $name.\n" if ($generate or $verbose);
-            next;
-        }
-
-        #   Log History is limited to 9
-        if ($log_hist > 9) 
-        {
-            print "-W- Log history cannot be greater than 9 (setting it to 9).\n" if ($generate or $verbose);
-            $log_hist = 9;
-        }
-
-        #   Check for -1 to disable cleanup
-        $disable_cleanup = "";
-        if ($log_hist < 0)
-        {
-            $log_hist = 9;
-            $disable_cleanup = '#';
-        }
-        
-        # Record the settings
-        $config_settings{$dir}{'FILE_SYSTEM'} = $fs;
-        $config_settings{$dir}{'SERVICE_NAME'} = 'dir2ram_' . $name;
-        $config_settings{$dir}{'ORIGINAL_NAME'} = $name;
-        $config_settings{$dir}{'MEMORY_SIZE'} = $size . "M";
-        $config_settings{$dir}{'ACTUAL_SIZE'} = $actual_size . "M";
-        $config_settings{$dir}{'LOG_HISTORY'} = $log_hist;
-        $config_settings{$dir}{'DEPENDENT_SERVICE'} = $services;
-        $config_settings{$dir}{'DISABLE_CLEANUP'} = $disable_cleanup;
+        close CONFIG_FILE;
     }
-
-    close CONFIG_FILE;
 
     #   Check if the configuration file is empty
     unless (keys %config_settings) 
     {
-        print "-E- The configuration file ($config_file) has no valid lines.\n";
+        print "-E- The configuration file ($main_config) has no valid lines.\n";
 
         exit 1;
     }
-
 }
 
 sub resolve_directories_to_process 
