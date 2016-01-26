@@ -29,6 +29,11 @@
 # 0.2 (1.24.2016):
 # - Change behavior so that subsequent lines with the same directory specified overwrite previous entries.
 # - Read all /etc/dir2ram/*.conf configuration files, instead of just dir2ram.conf.  Read in sorted order.
+#
+# 0.3 (1.25.2016):
+# - Added capability to use another disk as a cache.  This allows using a larger drive to cache a
+#   directory on a flash drive serving as the OS drive.
+
 
 # Unbuffer STDOUT
 $| = 1;
@@ -99,11 +104,11 @@ FILES
                       Example, for 5, logs *.log.[5-9][.gz] are deleted.
                    Dependent Service(s): List of the services that need to be
                       stopped and then restarted for the directory to be mounted.
-                   Directory to Cache: Directory to be cached in memory.
+                   Directory to Cache: Directory to be cached in memory or another disk path.
 	${init_dir}/dir2ram_*
 		Init scripts for each directory in the configuration file.
 	${bind_dir}/*
-		Bind-mounted original folders being cached by the tmpfs|ramfs directories.
+		Bind-mounted original folders being cached by the tmpfs|ramfs|drive directories.
         $cron_file
                 Daily synchronization cron script.
  
@@ -138,23 +143,26 @@ unless ($generate or $clean or $status or $syncall or $mountall or $mount or $um
 $config_template = 
 "#
 # EXAMPLE:
-# Name      FS     MB  LogHist  Dependent_Service(s)   Dir_To_Cache
-# smart     tmpfs  8   5        smartd,smartmontools   /var/lib/smartmontools
-# sickbeard tmpfs  256 5        sickbeard              /var/opt/sickbeard
-# couch     tmpfs  256 5        couchpotato            /home/couchpotato
-# samba     tmpfs  16  5        samba                  /var/cache/samba
-# plex      tmpfs  256 5        plexmediaserver        /media/e5f80c22-2bd8-427b-88f5-cad32e84e464/plexmediaserver/Library/Application Support/Plex Media Server/Logs
-# ntp       tmpfs  8   5        ntp                    /var/lib/ntp
-# minidlna  tmpfs  16  5        minidlna               /var/cache/minidlna
+# Name      MB  LogHist Dependent_Service(s)  Cache          Dir_To_Cache
+# smart     8   5       smartd,smartmontools  tmpfs          /var/lib/smartmontools
+# sickbeard 256 5       sickbeard             tmpfs          /var/opt/sickbeard
+# couch     256 5       couchpotato           tmpfs          /home/couchpotato
+# samba     16  5       samba                 tmpfs          /var/cache/samba
+# plex      256 5       plexmediaserver       tmpfs          /media/e5f80c22-2bd8-427b-88f5-cad32e84e464/plexmediaserver/Library/Application Support/Plex Media Server/Logs
+# ntp       8   5       ntp                   tmpfs          /var/lib/ntp
+# minidlna  16  5       minidlna              tmpfs          /var/cache/minidlna
 #
 # Covered by folder2ram:
-# log       tmpfs  256 8        \$syslog                /var/log
-# vartmp    tmpfs  512 5        \$syslog                /var/tmp
-# spool     tmpfs  32  5        postfix                /var/spool
-# rrd       tmpfs  8   5        rrdcached              /var/lib/openmediavault/rrd
-# rrdcached tmpfs  256 5        rrdcached              /var/lib/rrdcached
-# monit     tmpfs  8   5        monit                  /var/lib/monit
-# php       tmpfs  8   5        php5-fpm               /var/lib/php5
+# log       256 8       \$syslog               tmpfs          /var/log
+# vartmp    512 5       \$syslog               tmpfs          /var/tmp
+# spool     32  5       postfix               tmpfs          /var/spool
+# rrd       8   5       rrdcached             tmpfs          /var/lib/openmediavault/rrd
+# rrdcached 256 5       rrdcached             tmpfs          /var/lib/rrdcached
+# monit     8   5       monit                 tmpfs          /var/lib/monit
+# php       8   5       php5-fpm              tmpfs          /var/lib/php5
+#
+# test       8   5       \$syslog              /root/donor          /root/dir
+
 
 ";
 
@@ -194,6 +202,7 @@ $init_template =
 
 NAME=SERVICE_NAME
 DIR=\"DIRECTORY\"
+DONOR=\"DONOR_DRIVE\"
 SIZE=MEMORY_SIZE
 
 DIRTRUE=\"${bind_dir}/\${NAME}\"
@@ -212,12 +221,18 @@ do_start()
         [ -d \"\$DIR\" ] || return 2
 
         # unmounting it if it was a tmpfs|ramfs already
-        umount -l -t \$FS \"\$DIR\" 2> /dev/null
+        umount -l \"\$DIR\" 2> /dev/null
 
         [ -d \"\$DIRTRUE\" ] || mkdir -p \"\$DIRTRUE\" || return 2
-
         mount --bind \"\$DIR\" \"\$DIRTRUE\"
-        mount -t \$FS -o nosuid,noexec,nodev,mode=0755,size=\$SIZE \$NAME \"\$DIR\"
+
+        if [ \"\$FS\" = \"DONOR\" ]; then
+                [ -d \"\$DONOR\" ] || mkdir -p \"\$DONOR\" || return 2
+                mount --bind \"\$DONOR\" \"\$DIR\"
+        else
+                mount -t \$FS -o nosuid,noexec,nodev,mode=0755,size=\$SIZE \$NAME \"\$DIR\"
+        fi
+        
         if [ \$? -eq 0 ]; then
 		if cp -rfp \"\$DIRTRUE\" -T \"\$DIR\"; then
 			touch \"\$LOCKFILE\"
@@ -308,6 +323,7 @@ exit
 
 %mounts_binding = ();
 %mounts_dir2ram = ();
+%mounts_donor = ();
 %mounts_type = ();
 
 $mount ||= ($mountall) ? "all" : "";
@@ -388,7 +404,20 @@ sub print_mounts
         my $space = "$space_actual/$space_total";
         my $mounted_tmpfs = $mounts_dir2ram{$name};
         my $fs = $mounts_type{$name};
+        
+        printf("%-9s %-9s %-5s  %-30s %-40s\n", $name, $space, $fs, $real_dir, $mounted_tmpfs);
+    }
 
+    foreach $dir (keys %mounts_donor) 
+    {
+        my $name = $config_settings{$dir}{'ORIGINAL_NAME'};
+        my $real_dir = (exists $mounts_binding{$name}) ? $mounts_binding{$name} : "Missing";
+        my $space_actual = $config_settings{$dir}{'ACTUAL_SIZE'};
+        my $space_total = $config_settings{$dir}{'MEMORY_SIZE'};
+        my $space = "$space_actual/$space_total";
+        my $mounted_tmpfs = $dir;
+        my $fs = "BIND";
+        
         printf("%-9s %-9s %-5s  %-30s %-40s\n", $name, $space, $fs, $real_dir, $mounted_tmpfs);
     }
     print "\n";
@@ -402,6 +431,14 @@ sub read_mounts
         {
             $mounts_binding{$bind_name} = $bind_mount;
             print "-I- Found binding mount $bind_name => $bind_mount\n" if ($verbose);
+            next;
+        }
+
+        if (my ($bind_mount) = $line =~ /^\/dev\/disk\/by-uuid\S+\s+on\s+(\/\S+)\s+/) 
+        {
+            $mounts_donor{$bind_mount} = 1;
+            print "-I- Found drive mount $bind_mount\n" if ($verbose);
+            next;
         }
 
         if (my ($dir2ram_name, $dir2ram_mount, $dir2ram_type) = $line =~ /^dir2ram_(\S+)\s+on\s+(.+)\s+type\s+(tmpfs|ramfs)\s+/) 
@@ -409,6 +446,7 @@ sub read_mounts
             $mounts_dir2ram{$dir2ram_name} = $dir2ram_mount;
             $mounts_type{$dir2ram_name} = $dir2ram_type;
             print "-I- Found dir2ram mount $dir2ram_name => $dir2ram_mount ($dir2ram_type)\n" if ($verbose);
+            next;
         }
     }
 }
@@ -419,7 +457,7 @@ sub umount_directories
     {
         # Don't try to unmount an already unmounted directory
         my $original_name = $config_settings{$dir}{'ORIGINAL_NAME'};  
-        unless (exists $mounts_dir2ram{$original_name}) 
+        unless (exists $mounts_dir2ram{$original_name} or exists $mounts_donor{$dir}) 
         {
             print "-W- Skipping unmounting of $original_name, the mount doesn't exist.\n";
             next;
@@ -539,6 +577,7 @@ sub create_init
         $current_init =~ s/LOG_HISTORY/$config_settings{$dir}{'LOG_HISTORY'}/g;
         $current_init =~ s/FILE_SYSTEM/$config_settings{$dir}{'FILE_SYSTEM'}/g;
         $current_init =~ s/DISABLE_CLEANUP/$config_settings{$dir}{'DISABLE_CLEANUP'}/g;
+        $current_init =~ s/DONOR_DRIVE/$config_settings{$dir}{'DONOR_DRIVE'}/g;
 
         # Write the init file.
         open(INIT_FILE, ">$current_init_file") or die "-F- Cannot open $current_init_file\n";
@@ -610,20 +649,42 @@ sub read_configuration
             chomp;
             
             # Keep going unless I find a properly formatted line
-            next unless (my ($name, $fs, $size, $log_hist, $services, $dir) =
-                         $_ =~ /^\s*(\S+)\s+(tmpfs|ramfs)\s+(\d+)\s*(?:m|M|MB|mb)?\s+(-?\d+)\s+([^\/]+)\s+(\/.*)\s*$/);
-            
+            next unless (my ($name, $size, $log_hist, $services, $cache, $dir) =
+                         $_ =~ /^\s*(\S+)\s+(\d+)\s*(?:m|M|MB|mb)?\s+(-?\d+)\s+([^\/\"]+)\s+(tmpfs|ramfs|\/.+|\"\/.+\")\s+(\/.+|\"\/.+\")\s*$/);
+
             # Cleanup the input.  Convert ',' to ' ' and get rid of multiple spaces.
             $services =~ s/,/ /g;
             $services =~ s/\s+/ /g;
+
+            # Cleanup $cache.  Eliminate the quotations, get rid of trailing space.
+            $cache =~ s/\"(.*)\"/$1/g;
+            $cache =~ s/\s+$//;
+
+            # Cleanup $dir.  Get rid of trailing space.
+            $dir =~ s/\s+$//;
             
             if ($verbose) 
             {
                 print "-I- Read Line ($config_file):\n";
-                printf("%15s %-9s %20s %-25s\n", "Name:", $name, "Directory:", $dir);
-                printf("%15s %-9s %20s %-25s\n", "Size:", $size . " MB", "Log History:", $log_hist);
-                printf("%15s %-9s %20s %-25s\n", "Filesystem:", $fs, "Service Dependency:", $services );
+                printf("%12s %-9s %20s %-25s\n", "Name:", $name, "Directory:", $dir);
+                printf("%12s %-9s %20s %-25s\n", "Size:", $size . " MB", "Filesystem:", $cache);
+                printf("%12s %-9s %20s %-25s\n", "Log History:", $log_hist, "Service Dependency:", $services );
             }
+            
+            # Process $cache
+            my $donor;
+            if ($cache eq "tmpfs" or $cache eq "ramfs") 
+            {
+                $donor = "";
+
+            }
+            else 
+            {
+                $donor = $cache;
+                $cache = "DONOR";
+                $size = "--";
+            }
+            
             
             #
             # Perform Checks of the input
@@ -656,16 +717,17 @@ sub read_configuration
                 }
                 next if ($skip_for_service_error);
             }
-            
+
             #   Check the directory size against the requested size.
             my $du_command = "du -m -s \"$dir\"";
             my $actual_size = `$du_command` or die "-F- Unable to execute: \"$du_command\"\n";
             ($actual_size) = split(" ", $actual_size);
-            if ($actual_size > $size) 
+            if ($cache ne "DONOR" and $actual_size > $size) 
             {
                 print "-W- Specified size (${size}M) is too small vs. actual directory size (${actual_size}M): $name.\n"
                     if ($generate or $verbose);
             }
+
             
             #   Skip if the name isn't unique (repeat).
 #        if (exists $config_settings{$dir}) 
@@ -690,7 +752,7 @@ sub read_configuration
             }
             
             # Record the settings
-            $config_settings{$dir}{'FILE_SYSTEM'} = $fs;
+            $config_settings{$dir}{'FILE_SYSTEM'} = $cache;
             $config_settings{$dir}{'SERVICE_NAME'} = 'dir2ram_' . $name;
             $config_settings{$dir}{'ORIGINAL_NAME'} = $name;
             $config_settings{$dir}{'MEMORY_SIZE'} = $size . "M";
@@ -698,6 +760,7 @@ sub read_configuration
             $config_settings{$dir}{'LOG_HISTORY'} = $log_hist;
             $config_settings{$dir}{'DEPENDENT_SERVICE'} = $services;
             $config_settings{$dir}{'DISABLE_CLEANUP'} = $disable_cleanup;
+            $config_settings{$dir}{'DONOR_DRIVE'} = $donor;
         }
         
         close CONFIG_FILE;
