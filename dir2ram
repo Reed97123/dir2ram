@@ -33,6 +33,15 @@
 # 0.3 (1.25.2016):
 # - Added capability to use another disk as a cache.  This allows using a larger drive to cache a
 #   directory on a flash drive serving as the OS drive.
+#
+# 0.4 (1.27.2016):
+# - Cleaned up the implementation for the 0.3 additions.
+# - Added 'reboot' as an option for services.  dir2ram will not attempt to mount/unmount a directory with
+#   this option specified.  It will still be added to 'insserv' and will be mounted at next reboot.
+# - Added a 'rmdir' to clean up the left over directory stub where the true directory was mounted.
+# - Use rsync to allow deletion of files on the actual disk if they were deleted in the cache.  Otherwise
+#   the use of copy didn't permit any files to be deleted in the original directory.
+
 
 
 # Unbuffer STDOUT
@@ -52,65 +61,62 @@ $usage = "
 $0 [-h] [-v] [-generate|clean|status|syncall|mountall|mount <name|all>|umountall|umount <name|all>]
 
 SYNOPSIS
-	Cache small and commonly accessed directories in memory to decrease the 
-	wear and tear on the disk and prevents the spinning up of a disk to write 
-	the data.
+  Cache small and commonly accessed directories in memory to decrease the wear and tear on the
+  disk and prevents the spinning up of a disk to write the data.
 
 DESCRIPTION
-	Directories specificed in the configuration file are cached to memory.  
-	Each directory specified has an init script created which is called at 
-	boot and copies/mounts the directory to memory.  At shutdown the process 
-	is reversed and the contents of the memory are written to disk.
+  Directories specificed in the configuration file are cached to memory.  Each directory specified
+  has an init script created which is called at boot and copies/mounts the directory to memory.
+  At shutdown the process is reversed and the contents of the memory are written to disk.
 
 OPTIONS
-	-v
-		Verbose
-	-generate
-		Reads the config file and generates the init scripts that are missing.
-                Generates the cron daily synchronization script.
-	-clean
-		Stop dir2ram and delete all dir2ram init scripts.
-                Uninstalls all system init scripts.
-                Removes cron daily synchronization script.
-	-status
-		Display all mountpoints and their status.
-	-syncall
-		Sync to disk the content of dir2ram tmpfs|ramfs directories.
-                Uses the cron script and generates it if it isn't present.
-	-mountall or -mount <name|all>
-		Mounts <name> or all system init scripts in the init directory.
-                Installs specified mounts as system init script.
-                (Only files in the init directory with corresponding entries in
-                the config file will be loaded)
-	-umountall or -umount <name|all>
-                Unmounts <name> or all system init scripts in the init directory.
-		Uninstall specified mounts as system init scripts.
-                (Only files in the init directory with corresponding entries in
-                the config file will be unloaded)
-	-initialize
-		Creates an empty configuration file.
+  -v
+       Verbose
+  -generate
+       Reads the config file and generates the init scripts that are missing.  Generates the cron
+       daily synchronization script.
+  -clean
+       Stop dir2ram and delete all dir2ram init scripts.  Uninstalls all system init scripts.
+       Removes cron daily synchronization script.
+  -status
+       Display all mountpoints and their status.
+  -syncall
+       Sync to disk the content of dir2ram tmpfs|ramfs directories.
+       Uses the cron script and generates it if it isn't present.
+  -mountall or -mount <name|all>
+       Mounts <name> or all system init scripts in the init directory.  Installs specified mounts
+       as system init script.  (Only files in the init directory with corresponding entries in
+       the config file will be loaded)
+  -umountall or -umount <name|all>
+       Unmounts <name> or all system init scripts in the init directory.  Uninstall specified
+       mounts as system init scripts.  (Only files in the init directory with corresponding
+       entries in the config file will be unloaded)
+  -initialize
+       Creates an empty configuration file.
 
 FILES
-	/sbin/dir2ram
-		Main program.
-	$main_config
-		Main configuration file.
-                   Name:  Single word description of this entry.
-                   File System:  Options are tmpfs (typical) or ramfs.
-                      tmpfs:  Can swap to disk, can hard cap space usage.
-                      ramfs:  No disk swapping, no hard limits on space usage.
-                   MB:  Size of your tmpfs|ramfs drive in megabytes.
-                   Log History:  How many old logs to remove.  Set to -1 to disable.
-                      Example, for 5, logs *.log.[5-9][.gz] are deleted.
-                   Dependent Service(s): List of the services that need to be
-                      stopped and then restarted for the directory to be mounted.
-                   Directory to Cache: Directory to be cached in memory or another disk path.
-	${init_dir}/dir2ram_*
-		Init scripts for each directory in the configuration file.
-	${bind_dir}/*
-		Bind-mounted original folders being cached by the tmpfs|ramfs|drive directories.
-        $cron_file
-                Daily synchronization cron script.
+  /sbin/dir2ram
+     Main program.
+  $main_config
+     Main configuration file.
+        Name:  Single word description of this entry.
+        MB:  Size of your tmpfs|ramfs drive in megabytes.
+        Log History:  How many old logs to remove.  Set to -1 to disable.
+           Example, for 5, logs *.log.[5-9][.gz] are deleted.
+        Dependent Service(s): List of the services that need to be stopped and then restarted after
+           the directory is mounted.  List 'reboot' in the list to not attempt mounting the directory
+           except at reboot.
+        Cache:  Options are tmpfs (typical), ramfs, or a directory
+           tmpfs:  Can swap to disk, can hard cap space usage.
+           ramfs:  No disk swapping, no hard limits on space usage.
+           directory:  Use another disk to cache your directory.
+        Directory to Cache: Directory to be cached in memory or another disk path.
+  ${init_dir}/dir2ram_*
+     Init scripts for each directory in the configuration file.
+  ${bind_dir}/*
+     Bind-mounted original folders being cached by the tmpfs|ramfs|drive directories.
+  $cron_file
+     Daily synchronization cron script.
  
 ";
 
@@ -161,7 +167,11 @@ $config_template =
 # monit     8   5       monit                 tmpfs          /var/lib/monit
 # php       8   5       php5-fpm              tmpfs          /var/lib/php5
 #
+# Drive to drive case
 # test       8   5       \$syslog              /root/donor          /root/dir
+#
+# Only mount when rebooting
+# test       8   5       \$syslog,reboot       \"/root/donor space\"          /root/dir
 
 
 ";
@@ -226,7 +236,7 @@ do_start()
         [ -d \"\$DIRTRUE\" ] || mkdir -p \"\$DIRTRUE\" || return 2
         mount --bind \"\$DIR\" \"\$DIRTRUE\"
 
-        if [ \"\$FS\" = \"DONOR\" ]; then
+        if [ \"\$FS\" = \"DRIVE\" ]; then
                 [ -d \"\$DONOR\" ] || mkdir -p \"\$DONOR\" || return 2
                 mount --bind \"\$DONOR\" \"\$DIR\"
         else
@@ -259,10 +269,12 @@ do_stop() {
         [ `id -u` -eq 0 ] || return 2
 
         # Merge back to permanent storage
-        cp -rfup \"\$DIR\" -T \"\$DIRTRUE\"
+        #cp -rfup \"\$DIR\" -T \"\$DIRTRUE\"
+        rsync -a --delete \"\${DIR}/\" \"\$DIRTRUE\"
 
         umount -l \"\$DIR\"
         umount -l \"\$DIRTRUE\"
+        rmdir \"\$DIRTRUE\"
         rm -r \"\$LOCKFILE\"
         return 0
 }
@@ -281,11 +293,10 @@ do_reload() {
         # Cleanup Old Logs (Optional)
         DISABLE_CLEANUPfind \"\$DIR\" -type f -name \"*.log.[LOG_HISTORY-9]\" -exec rm -f {} \\;
         DISABLE_CLEANUPfind \"\$DIR\" -type f -name \"*.log.[LOG_HISTORY-9].gz\" -exec rm -f {} \\;
-        DISABLE_CLEANUPfind \"\$DIRTRUE\" -type f -name \"*.log.[LOG_HISTORY-9]\" -exec rm -f {} \\;
-        DISABLE_CLEANUPfind \"\$DIRTRUE\" -type f -name \"*.log.[LOG_HISTORY-9].gz\" -exec rm -f {} \\;
 
         # Merge back to permanent storage
-        cp -rfup \"\$DIR\" -T \"\$DIRTRUE\"
+        #cp -rfup \"\$DIR\" -T \"\$DIRTRUE\"
+        rsync -a --delete \"\${DIR}/\" \"\$DIRTRUE\"
         touch \"\$LOCKFILE\"
         return 0
 }
@@ -321,10 +332,10 @@ exit
 
 %config_settings = ();
 
-%mounts_binding = ();
-%mounts_dir2ram = ();
-%mounts_donor = ();
-%mounts_type = ();
+%mounts_bind_real = ();
+%mounts_ram_dir = ();
+%mounts_bind_drive = ();
+%mounts_ram_type = ();
 
 $mount ||= ($mountall) ? "all" : "";
 $umount ||= ($umountall or $clean) ? "all" : "";
@@ -394,31 +405,59 @@ if ($status)
 
 sub print_mounts 
 {
-    printf("\n%-9s %-9s %-5s  %-30s %-40s\n", "Name", "Space", "FileS", "Real Directory", "Mounted tmpfs|ramfs");
-    printf("%-9s %-9s %-5s  %-30s %-40s\n", "====", "=====", "=====", "==============", "===================");
-    foreach $name (keys %mounts_dir2ram) 
+    printf("\n%-9s %-9s %-5s  %-30s %-40s\n", "Name", "Space", "FileS", "Real Directory", "Cached Directory");
+    printf("%-9s %-9s %-5s  %-30s %-40s\n", "====", "=====", "=====", "==============", "================");
+    foreach $name (keys %mounts_ram_dir) 
     {
-        my $real_dir = (exists $mounts_binding{$name}) ? $mounts_binding{$name} : "Missing";
-        my $space_actual = $config_settings{$mounts_dir2ram{$name}}{'ACTUAL_SIZE'};
-        my $space_total = $config_settings{$mounts_dir2ram{$name}}{'MEMORY_SIZE'};
-        my $space = "$space_actual/$space_total";
-        my $mounted_tmpfs = $mounts_dir2ram{$name};
-        my $fs = $mounts_type{$name};
+        # Name = User entered name
+        # Real Directory = /var/dir2ram/dir2ram_<name>
+        # Cached Directory = Directory that is being Cached
+        # %mounts_ram_dir{name} = Cached Directory (user entered directory)
+        # %mounts_bind_real{name} = Real Directory (/var/dir2ram/dir2ram_<name>)
+        # %mounts_ram_type{name} = tmpfs or ramfs
         
-        printf("%-9s %-9s %-5s  %-30s %-40s\n", $name, $space, $fs, $real_dir, $mounted_tmpfs);
+        my $real_dir = (exists $mounts_bind_real{$name}) ? $mounts_bind_real{$name} : "Missing";
+        my $cached_dir = $mounts_ram_dir{$name};
+
+        my $space;
+        if (exists $config_settings{$cached_dir}) 
+        {
+            my $space_actual = $config_settings{$cached_dir}{'ACTUAL_SIZE'};
+            my $space_total = $config_settings{$cached_dir}{'MEMORY_SIZE'};
+            $space = "$space_actual/$space_total";
+        }
+        else 
+        {
+            $space = "ERROR";
+        }
+
+        my $fs = (exists $mounts_ram_type{$name}) ? $mounts_ram_type{$name} : "ERROR";
+        
+        printf("%-9s %-9s %-5s  %-30s %-40s\n", $name, $space, $fs, $real_dir, $cached_dir);
     }
 
-    foreach $dir (keys %mounts_donor) 
+    # The only items recorded in %mounts_bind_drive will be drive to drive bind mounts
+    foreach $cached_dir (keys %mounts_bind_drive) 
     {
-        my $name = $config_settings{$dir}{'ORIGINAL_NAME'};
-        my $real_dir = (exists $mounts_binding{$name}) ? $mounts_binding{$name} : "Missing";
-        my $space_actual = $config_settings{$dir}{'ACTUAL_SIZE'};
-        my $space_total = $config_settings{$dir}{'MEMORY_SIZE'};
-        my $space = "$space_actual/$space_total";
-        my $mounted_tmpfs = $dir;
-        my $fs = "BIND";
+        # Name = User entered name
+        # Real Directory = /var/dir2ram/dir2ram_<name>
+        # Cached Directory = Directory that is being Cached
+        # %mounts_bind_drive{cached_dir} = 1
+        # %mounts_bind_real{name} = Real Directory (/var/dir2ram/dir2ram_<name>)
+
+        # If it isn't listed in here it could be a bind mount not created by dir2ram
+        next unless (exists $config_settings{$cached_dir});
         
-        printf("%-9s %-9s %-5s  %-30s %-40s\n", $name, $space, $fs, $real_dir, $mounted_tmpfs);
+        my $name = $config_settings{$cached_dir}{'ORIGINAL_NAME'};
+        my $real_dir = (exists $mounts_bind_real{$name}) ? $mounts_bind_real{$name} : "Missing";
+
+        my $space_actual = $config_settings{$cached_dir}{'ACTUAL_SIZE'};
+        my $space_total = $config_settings{$cached_dir}{'MEMORY_SIZE'};
+        my $space = "$space_actual/$space_total";
+
+        my $donor = $config_settings{$cached_dir}{'DONOR_DRIVE'};
+        
+        printf("%-9s %-9s %-5s  %-30s %-40s\n", $name, $space, 'bind', $real_dir, "$cached_dir -> $donor");
     }
     print "\n";
 }
@@ -427,25 +466,31 @@ sub read_mounts
 {
     foreach $line (`mount`) 
     {
-        if (my ($bind_mount, $bind_name) = $line =~ /^\S+\s+on\s+(\/var\/dir2ram\/dir2ram_(\S+))\s+/) 
+        # Mounts:  Real Directory Bind Mounts
+        # /dev/disk/by-uuid/095c3121-82c7-4318-93e5-1f04f77d7719 on /var/dir2ram/dir2ram_vartmp type ext4
+        if (my ($bind_mount, $name) = $line =~ /^\S+\s+on\s+(\/var\/dir2ram\/dir2ram_(\S+))\s+/) 
         {
-            $mounts_binding{$bind_name} = $bind_mount;
-            print "-I- Found binding mount $bind_name => $bind_mount\n" if ($verbose);
+            $mounts_bind_real{$name} = $bind_mount;
+            print "-I- Found real directory bind mount: $name => $bind_mount\n" if ($verbose);
             next;
         }
 
-        if (my ($bind_mount) = $line =~ /^\/dev\/disk\/by-uuid\S+\s+on\s+(\/\S+)\s+/) 
+        # Mounts:  Drive to Drive Bind Mounts
+        # /dev/disk/by-uuid/095c3121-82c7-4318-93e5-1f04f77d7719 on /root/dir type ext4 
+        if (my ($bind_mount) = $line =~ /^\/dev\/disk\/by-uuid\S+\s+on\s+(\/.+)\s+type/) 
         {
-            $mounts_donor{$bind_mount} = 1;
-            print "-I- Found drive mount $bind_mount\n" if ($verbose);
+            $mounts_bind_drive{$bind_mount} = 1;
+            print "-I- Found drive to drive bind mount: $bind_mount\n" if ($verbose);
             next;
         }
 
-        if (my ($dir2ram_name, $dir2ram_mount, $dir2ram_type) = $line =~ /^dir2ram_(\S+)\s+on\s+(.+)\s+type\s+(tmpfs|ramfs)\s+/) 
+        # Mounts:  tmpfs or ramfs RAM Drive
+        # dir2ram_vartmp on /var/tmp type tmpfs 
+        if (my ($name, $ram_mount_dir, $ram_mount_type) = $line =~ /^dir2ram_(\S+)\s+on\s+(.+)\s+type\s+(tmpfs|ramfs)\s+/) 
         {
-            $mounts_dir2ram{$dir2ram_name} = $dir2ram_mount;
-            $mounts_type{$dir2ram_name} = $dir2ram_type;
-            print "-I- Found dir2ram mount $dir2ram_name => $dir2ram_mount ($dir2ram_type)\n" if ($verbose);
+            $mounts_ram_dir{$name} = $ram_mount_dir;
+            $mounts_ram_type{$name} = $ram_mount_type;
+            print "-I- Found tmpfs or ramfs mount: $name => $ram_mount_dir ($ram_mount_type)\n" if ($verbose);
             next;
         }
     }
@@ -457,9 +502,16 @@ sub umount_directories
     {
         # Don't try to unmount an already unmounted directory
         my $original_name = $config_settings{$dir}{'ORIGINAL_NAME'};  
-        unless (exists $mounts_dir2ram{$original_name} or exists $mounts_donor{$dir}) 
+        unless (exists $mounts_ram_dir{$original_name} or exists $mounts_bind_drive{$dir}) 
         {
             print "-W- Skipping unmounting of $original_name, the mount doesn't exist.\n";
+            next;
+        }
+
+        # Don't unmount if 'reboot' was specified in the config file.
+        if ($config_settings{$dir}{'SERVICE_REBOOT'})
+        {
+            print "-W- Skipping unmounting of $original_name, reboot to unmount.\n";
             next;
         }
 
@@ -498,12 +550,19 @@ sub mount_directories
     {
         # Don't try to mount an already mounted directory
         my $original_name = $config_settings{$dir}{'ORIGINAL_NAME'};  
-        if (exists $mounts_dir2ram{$original_name})
+        if (exists $mounts_ram_dir{$original_name})
         {
             print "-W- Skipping mounting of $original_name, the mount already exists.\n";
             next;
         }
 
+        # Don't mount if 'reboot' was specified in the config file.
+        if ($config_settings{$dir}{'SERVICE_REBOOT'})
+        {
+            print "-W- Skipping mounting of $original_name, reboot to mount.\n";
+            next;
+        }
+        
         my $service_to_start = $config_settings{$dir}{'SERVICE_NAME'};
         
         # Check to make sure lines in the config file match with files in the init directory.
@@ -563,7 +622,7 @@ sub create_init
         # Don't overwrite an existing file or one that is mounted.
         # Potential issues if it is changed without being unmounted properly.
         my $original_name = $config_settings{$dir}{'ORIGINAL_NAME'};
-        if (-e $current_init_file and exists $mounts_dir2ram{$original_name})
+        if (-e $current_init_file and exists $mounts_ram_dir{$original_name})
         {
             print "-W- Skipping creation of $current_init_file, it exists and is mounted.  Please unmount before regenerating.\n";
             next;
@@ -661,29 +720,46 @@ sub read_configuration
             $cache =~ s/\s+$//;
 
             # Cleanup $dir.  Get rid of trailing space.
+            $dir =~ s/\"(.*)\"/$1/g;
             $dir =~ s/\s+$//;
             
             if ($verbose) 
             {
                 print "-I- Read Line ($config_file):\n";
                 printf("%12s %-9s %20s %-25s\n", "Name:", $name, "Directory:", $dir);
-                printf("%12s %-9s %20s %-25s\n", "Size:", $size . " MB", "Filesystem:", $cache);
+                printf("%12s %-9s %20s %-25s\n", "Size:", $size . " MB", "Cache:", $cache);
                 printf("%12s %-9s %20s %-25s\n", "Log History:", $log_hist, "Service Dependency:", $services );
             }
             
             # Process $cache
             my $donor;
-            if ($cache eq "tmpfs" or $cache eq "ramfs") 
+            if (grep(/^$cache$/,("tmpfs","ramfs")))
             {
                 $donor = "";
-
             }
             else 
             {
+                # In this context the cache is from a 'donor' drive and the type of cache is 'DRIVE'
                 $donor = $cache;
-                $cache = "DONOR";
-                $size = "--";
+                $cache = "DRIVE";
+
+                # Get the size of the 'donor' drive.  Check one directory up in case it doesn't exist yet.
+                my ($modified_path) = $donor =~ /^(.*)\/[^\/]+$/;
+                my @df_results = `df -BM "$modified_path"` or die "-F- Unable to get free space of $modified_path\n";
+                @df_results = split(" ", $df_results[1]);
+                $size = $df_results[3];
+                $size =~ s/M$//;
             }
+            
+            # Check Services for 'reboot'
+            my $reboot = 0;
+            if ($services =~ /reboot/) 
+            {
+                $services =~ s/reboot//;
+                $services =~ s/\s+/ /g;
+                $reboot = 1;
+            }
+            
             
             
             #
@@ -691,7 +767,9 @@ sub read_configuration
             #
             
             # Don't check for these items if the directory is already mounted.
-            unless (exists $mounts_dir2ram{$name}) 
+            # Directory Exists
+            # Services Exist
+            unless (exists $mounts_ram_dir{$name}) 
             {
                 #   Check to see if the directly exists
                 unless (-d $dir) 
@@ -722,19 +800,11 @@ sub read_configuration
             my $du_command = "du -m -s \"$dir\"";
             my $actual_size = `$du_command` or die "-F- Unable to execute: \"$du_command\"\n";
             ($actual_size) = split(" ", $actual_size);
-            if ($cache ne "DONOR" and $actual_size > $size) 
+            if ($actual_size > $size) 
             {
-                print "-W- Specified size (${size}M) is too small vs. actual directory size (${actual_size}M): $name.\n"
+                print "-W- Cache size (${size}M) is too small vs. actual directory size (${actual_size}M): $name.\n"
                     if ($generate or $verbose);
             }
-
-            
-            #   Skip if the name isn't unique (repeat).
-#        if (exists $config_settings{$dir}) 
-#        {
-#            print "-W- Specified directory ($dir) is a repeat.  Skipping directory: $name.\n" if ($generate or $verbose);
-#            next;
-#        }
             
             #   Log History is limited to 9
             if ($log_hist > 9) 
@@ -761,6 +831,7 @@ sub read_configuration
             $config_settings{$dir}{'DEPENDENT_SERVICE'} = $services;
             $config_settings{$dir}{'DISABLE_CLEANUP'} = $disable_cleanup;
             $config_settings{$dir}{'DONOR_DRIVE'} = $donor;
+            $config_settings{$dir}{'SERVICE_REBOOT'} = $reboot;
         }
         
         close CONFIG_FILE;
