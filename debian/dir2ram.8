@@ -1,0 +1,98 @@
+.\"                                      Hey, EMACS: -*- nroff -*-
+.\" First parameter, NAME, should be all caps
+.\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
+.\" other parameters are allowed: see man(7), man(1)
+.TH DIR2RAM 8 "2016" "dir2ram"
+.\" Please adjust this date whenever revising the manpage.
+.\"
+.\" Some roff macros, for reference:
+.\" .nh        disable hyphenation
+.\" .hy        enable hyphenation
+.\" .ad l      left justify
+.\" .ad b      justify to both left and right margins
+.\" .nf        disable filling
+.\" .fi        enable filling
+.\" .br        insert line break
+.\" .sp <n>    insert n+1 empty lines
+.\" for manpage-specific macros, see man(7)
+.SH NAME
+dir2ram \- cache small and commonly accessed directories in memory
+.SH SYNOPSIS
+\fBdir2ram\fP \fIaction\fP \fB\-v\fP \fB\-generate\fP \fB\-clean\fP \fB\-status\fP \fB\-syncall\fP \fB\-mountall\fP \fB\-mount name/all \fP \fB\-umountall\fP \fB\-umount name/all\fP \fB\-initialize\fP
+.PP
+.SH DESCRIPTION
+\fBdir2ram\fP   Directories specificed in the configuration file are cached to memory.  Each directory specified
+  has an init script created which is called at boot and copies/mounts the directory to memory.
+  At shutdown the process is reversed and the contents of the memory are written to disk.
+
+.SH OPTIONS
+.TP
+\fIaction\fP
+This option specifies the action to execute. It could be :
+.RS
+.TP .4i
+\fB-v\fP:
+Verbose
+.TP
+\fB-generate\fP:
+Reads the config file and generates the init scripts that are missing. Generates the cron daily synchronization script.
+.TP
+\fB-clean\fP:
+Stop dir2ram and delete all dir2ram init scripts. Uninstalls all system init scripts. Removes cron daily synchronization script.
+.TP
+\fB-status\fP:
+Display all mountpoints and their status.
+.TP
+\fB-syncall\fP:
+Sync to disk the content of dir2ram tmpfs|ramfs directories. Uses the cron script and generates it if it isn't present.
+.TP
+\fB-mountall or -mount <name|all>\fP:
+Mounts <name> or all system init scripts in the init directory. Installs specified mounts as system init script. (Only files in the init directory with corresponding entries in the config file will be loaded)
+.TP
+\fB-umountall or -umount <name|all>\fP:
+Unmounts <name> or all system init scripts in the init directory. Uninstall specified mounts as system init scripts. (Only files in the init directory with corresponding entries in the config file will be unloaded)
+.TP
+\fB-initialize\fP:
+Creates an empty configuration file.
+.TP
+\fB-mountall\fP:
+folder2ram will mount the folders in the config file
+.TP
+\fB\-umountall\fP
+folder2ram will sync and unmount all folders in the config file
+.TP
+\fB\-configure\fP
+open the configuration file in a text editor
+.TP
+\fB\-clean\fP
+unmounts all folders then removes any autostart
+.TP
+\fB\-reset\fP
+delete folder2ram autostart and restore default config file
+.SH DEFAULTS
+By default, \fBdir2ram\fP won't make /var/run, /var/lock or /tmp available as
+ram filesystems. See \fBtmpfs\fP(5) for more information.
+.SH FILES
+.PP
+.IP "/sbin/dir2ram"
+Main program.
+.IP "/etc/dir2ram.conf"
+Main configuration file.
+        Name:  Single word description of this entry.
+        MB:  Size of your tmpfs|ramfs drive in megabytes.
+        Log History:  How many old logs to remove.  Set to -1 to disable.
+           Example, for 5, logs *.log.[5-9][.gz] are deleted.
+        Dependent Service(s): List of the services that need to be stopped and then restarted after
+           the directory is mounted.  List 'reboot' in the list to not attempt mounting the directory
+           except at reboot.
+        Cache:  Options are tmpfs (typical), ramfs, or a directory
+           tmpfs:  Can swap to disk, can hard cap space usage.
+           ramfs:  No disk swapping, no hard limits on space usage.
+           directory:  Use another disk to cache your directory.
+        Directory to Cache: Directory to be cached in memory or another disk path.
+.IP "/var/folder2ram/*"
+ Bind-mounted original folders being cached by the tmpfs|ramfs|drive directories.
+.SH SEE ALSO
+\fBmount\fP(8), \fBtmpfs\fP(5).
+.SH AUTHOR
+the author of dir2ram is Reed Nelson <starshipeleven@hotmail.it>
