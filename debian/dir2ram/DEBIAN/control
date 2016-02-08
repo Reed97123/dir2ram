@@ -1,0 +1,11 @@
+Package: dir2ram
+Version: 0.4
+Architecture: all
+Maintainer: Alberto Bursi <starshipeleven@hotmail.it>
+Installed-Size: 87
+Depends: debconf (>= 0.5) | debconf-2.0, rsync, perl
+Section: admin
+Priority: optional
+Description: Cache small and commonly accessed directories
+ in memory to decrease the wear and tear on the disk
+ and prevents the spinning up of a disk to write the data.

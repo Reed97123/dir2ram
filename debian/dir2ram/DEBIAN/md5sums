@@ -1,0 +1,6 @@
+24293b6868f06c00858caf5e97b5a5a0  sbin/dir2ram
+091b2e9defe5c9e31e800510e354abb1  usr/share/doc/dir2ram/README.Debian
+8e1ae83034c3b2f0ff15ae0c2cbb46c0  usr/share/doc/dir2ram/changelog.gz
+79a93ee3d8c34e691b803b30aa60d644  usr/share/doc/dir2ram/copyright
+7184f90985845e6d69a7f362939059e8  usr/share/lintian/overrides/dir2ram
+9da65cfa86db107bbe3aa859d7cba279  usr/share/man/man8/dir2ram.8.gz
