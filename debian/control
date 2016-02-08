@@ -1,14 +1,12 @@
 Source: dir2ram
 Section: admin
 Priority: optional
-Maintainer: Reed Nelson <starshipeleven@hotmail.it>
+Maintainer: Reed Nelson <Reed97123@users.noreply.github.com>
 Build-Depends: 
 Standards-Version: 3.9.3
 
 Package: dir2ram
 Architecture: all
 Depends: ${misc:Depends}, rsync, perl
-Description: Cache small and commonly accessed directories 
-	in memory to decrease the wear and tear on the disk 
-	and prevents the spinning up of a disk to write the data.
+Description: Cache small and commonly accessed directories in memory to decrease the wear and tear on the disk and prevents the spinning up of a disk to write the data.
 
